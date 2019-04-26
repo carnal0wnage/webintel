@@ -105,6 +105,8 @@ class Probe (threading.Thread):
         s.found("Wordpress") if s.inBody("wp-content/") or s.inBody("wp-includes") else 0 
         s.found("Drupal") if s.inBody("drupal.min.js") or s.inBody("Drupal.settings") or s.inBody("http://drupal.org") or s.inBody("/node") else 0 
         s.found("Coldfusion") if s.inBody(".cfm") or s.inBody(".cfc") else 0
+        s.found("Coldfusion 11") if s.inBody("1997 - 2014 Adobe Systems Incorporated and its licensors") else 0
+        s.found("Coldfusion Cookie") if s.inHeader("set-cookie", "CFTOKEN=") or s.inHeader("set-cookie", "CFAUTHORIZATION") else 0
         s.found("Accellion SFT") if s.inBody("Secured by Accellion") else 0
         s.found("F5 BIG-IP") if (s.inBody("licensed from F5 Networks") and s.inUrl("my.policy")) or (s.inBody("BIG-IP logout page") and s.inUrl("my.logout.php")) else 0
         s.found("Confluence") if s.inBody("login to Confluence") or s.inBody("Log in to Confluence") or s.inBody("com-atlassian-confluence") else 0
@@ -133,6 +135,7 @@ class Probe (threading.Thread):
         s.found("Default Glassfish Homepage") if s.inBody("GlassFish Server") and s.inBody("Your server is now running") else 0
         s.found("MobileGuard") if s.inBody("MobileGuard Compliance Home Page") else 0
         s.found("SAP Business Objects") if s.inUrl("BOE/BI") and s.inBody("servletBridgeIframe") else 0 # http://www.cvedetails.com/vulnerability-list/vendor_id-797/product_id-20077/SAP-Businessobjects.html
+        s.found("SAP NetWeaver Application Server") if s.inHeader("server", "SAP NetWeaver Application Server") else 0
         s.found("Kentico") if s.inBody("CMSPages/GetResource.ashx") else 0
         s.found("vSphere") if s.inBody("client/VMware-viclient.exe") else 0
         s.found("ESXi") if s.inBody('content="VMware ESXi') else 0
@@ -170,7 +173,7 @@ class Probe (threading.Thread):
         s.found("Cisco Secure ACS") if s.inBody("<title>Cisco Secure ACS Login</title>") else 0
         s.found("Cisco Integrated Management Controller") if s.inBody("<title>Cisco Integrated Management Controller Login</title>") else 0
         s.found("Snap Server") if s.inUrl("/sadmin/GetLogin.event") else 0
-        s.found("Palo Alto GlobalProtect Portal") if s.inBody("GlobalProtect Portal") else 0
+        s.found("Palo Alto GlobalProtect Portal") if s.inBody("GlobalProtect Portal") or s.inBody("window.location=\"/global-protect/login.esp\"") else 0
         s.found("Demandware") if s.inBody("demandware.edgesuite") else 0
         s.found("McAfee Agent Activity Log") if s.inBody("AgentGUID") and s.inBody("Log") else 0
         s.found("Rails") if s.inBody("assets/javascripts") or s.inBody("assets/stylesheets") else 0
@@ -185,13 +188,16 @@ class Probe (threading.Thread):
         s.found("Nagios") if s.inBody("Nagios Core") else 0
         s.found("Oracle Middleware") if s.inBody("Welcome to Oracle Fusion Middleware") else 0
         s.found("Oracle Reports") if s.inBody("Oracle Reports Services - Servlet") else 0
+        s.found("Oracle Application Server") if s.inHeader("server", "Oracle-Application-Server") else 0
         s.found("TaskTop") if s.inBody("Sign in to Tasktop") else 0
         s.found("KeyCloak") if s.inBody("Log in to Keycloak") else 0
         s.found("Apache Spark Master") if s.inBody("Spark Master") else 0
         s.found("Apache Spark Worker") if s.inBody("Spark Worker") else 0
         s.found("Werkzeug Debugger") if s.inBody("Werkzeug Debugger") else 0
         s.found("phpPgAdmin") if s.inBody("phpPgAdmin") else 0
-        s.found("GitLab") if s.inBody("GitLab Community Edition") else 0   
+        s.found("GitLab") if s.inBody("GitLab Community Edition") else 0
+        s.found("Adobe Enterprise Manager") if s.inBody("AEM") else 0
+ 
         
         # always print server header. TODO make this cleaner
         server = s.resp.get('server','')
@@ -235,7 +241,7 @@ class Probe (threading.Thread):
                     self.out("Not HTTPS")
                     return
             else:
-                self.resp, self.respdata = h.request(self.url)
+                self.resp, self.respdata = h.request(self.url, headers={'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36'})
             if args.debug:
                 print(self.resp)
                 print(self.respdata)
