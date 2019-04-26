@@ -132,7 +132,7 @@ class Probe (threading.Thread):
         s.found("Quest Password Manager") if s.inBody("Quest Password Manager") else 0
         s.found("FogBugz") if s.inBody("FogBugz") and s.inBody("fogbugz.stackexchange.com") else 0
         s.found("WebSphere 6.1") if s.inBody("IBM HTTP Server") and s.inBody("infocenter/wasinfo/v6r1") else 0
-        s.found("Default Glassfish Homepage") if s.inBody("GlassFish Server") and s.inBody("Your server is now running") else 0
+        s.found("WebSphere Application Server") if s.inHeader("server", "WebSphere Application Server") else 0
         s.found("MobileGuard") if s.inBody("MobileGuard Compliance Home Page") else 0
         s.found("SAP Business Objects") if s.inUrl("BOE/BI") and s.inBody("servletBridgeIframe") else 0 # http://www.cvedetails.com/vulnerability-list/vendor_id-797/product_id-20077/SAP-Businessobjects.html
         s.found("SAP NetWeaver Application Server") if s.inHeader("server", "SAP NetWeaver Application Server") else 0
@@ -177,7 +177,8 @@ class Probe (threading.Thread):
         s.found("Demandware") if s.inBody("demandware.edgesuite") else 0
         s.found("McAfee Agent Activity Log") if s.inBody("AgentGUID") and s.inBody("Log") else 0
         s.found("Rails") if s.inBody("assets/javascripts") or s.inBody("assets/stylesheets") else 0
-        s.found("Sharepoint") if s.inHeader("MicrosoftSharePointTeamServices", ".") else 0
+        s.found("Sharepoint") if s.inHeader("MicrosoftSharePointTeamServices", ".") or s.inHeader("microsoftsharepointteamservices", ".") else 0
+        s.found("Sharepoint") if s.inHeader("X-SharePointHealthScore", ".") or s.inHeader("x-sharepointhealthscore", ".") else 0
         s.found("Default JMX-Console") if s.inBody("/jmx-console") and s.inBody("Welcome to JBoss") else 0
         s.found("Jenkins") if s.inBody("Dashboard [Jenkins]") else 0
         s.found("Axis2") if s.inBody("Login to Axis2 :: Administration page") or s.inBody("Welcome to the Axis2 administration console") else 0
@@ -189,6 +190,17 @@ class Probe (threading.Thread):
         s.found("Oracle Middleware") if s.inBody("Welcome to Oracle Fusion Middleware") else 0
         s.found("Oracle Reports") if s.inBody("Oracle Reports Services - Servlet") else 0
         s.found("Oracle Application Server") if s.inHeader("server", "Oracle-Application-Server") else 0
+        s.found("Oracle Fusion Middleware") if s.inHeader("server", "Oracle-Web-Cache") else 0
+        s.found("Oracle Integrated Lights Out Manager") if s.inHeader("server", "Oracle-ILOM-Web-Server") else 0
+        s.found("Oracle iPlanet Web Server") if s.inHeader("server", "Oracle-iPlanet-Web-Server") else 0
+        s.found("Oracle HTTP Server") if s.inHeader("server", "Oracle-HTTP-Server") else 0
+        s.found("Oracle Forms and Reports") if s.inBody("Oracle Application Server Forms and Reports Services") else 0
+        s.found("DD-WRT") if s.inBody("DD-WRT") else 0
+
+        s.found("Sun GlassFish Enterprise Server") if s.inHeader("server", "Sun GlassFish Enterprise Server") else 0
+        s.found("Sun GlassFish Open Source Edition") if s.inHeader("server", "GlassFish Server Open Source Edition") else 0
+        s.found("Default Glassfish Homepage") if s.inBody("GlassFish Server") and s.inBody("Your server is now running") else 0
+        s.found("GoAhead Web Server") if s.inHeader("server", "GoAhead-Webs") else 0
         s.found("TaskTop") if s.inBody("Sign in to Tasktop") else 0
         s.found("KeyCloak") if s.inBody("Log in to Keycloak") else 0
         s.found("Apache Spark Master") if s.inBody("Spark Master") else 0
@@ -197,7 +209,9 @@ class Probe (threading.Thread):
         s.found("phpPgAdmin") if s.inBody("phpPgAdmin") else 0
         s.found("GitLab") if s.inBody("GitLab Community Edition") else 0
         s.found("Adobe Enterprise Manager") if s.inBody("AEM") else 0
- 
+        s.found("Weblogic Application Server") if s.inBody("Welcome to Weblogic Application Server") or s.inBody("WebLogic Server") else 0 
+        s.found("Spring Eureka") if s.inBody("<title>Eureka") else 0
+        
         
         # always print server header. TODO make this cleaner
         server = s.resp.get('server','')
