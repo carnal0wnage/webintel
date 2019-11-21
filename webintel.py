@@ -5,24 +5,25 @@
 # Profiles web enabled services 
 #
 
-from __future__ import print_function
+
 import sys
 import traceback
 import argparse
 import base64
 import xml.etree.ElementTree as ET
-from HTMLParser import HTMLParser
+from html.parser import HTMLParser
 import httplib2
 import socket
-import thread
+import _thread
 import threading
-import Queue
+import queue
 import time
 import ssl, OpenSSL
-from urlparse import urlparse
+from urllib.parse import urlparse
+import importlib
 
-reload(sys)  
-sys.setdefaultencoding('utf8')
+importlib.reload(sys)  
+#sys.setdefaultencoding('utf8')
 
 # GLOBALS
 args = None
@@ -30,7 +31,7 @@ args = None
 threads = []
 exitFlag = False
 qlock = threading.Lock()
-qhosts = Queue.Queue()
+qhosts = queue.Queue()
 
 def warn(*objs):
     print("[*][WARNING]: ", *objs, file=sys.stderr)
@@ -75,18 +76,18 @@ class Probe (threading.Thread):
         
     def out(self, data):
         tp = TitleParser()
-        tp.feed(self.respdata)
+        tp.feed(self.respdata.decode())
         title = ("{}".format(tp.title.replace("\n","").replace("\r","").lstrip(" ").rstrip(" "))) if tp.title else ""
         if args.output == "default":
-            print( "[{status}][{length}] {url} | {data} | {title}".format(status=str(self.resp.status), length=str(len(self.respdata)), url=self.url, data=data, title=title) )
+            print( "[{status}][{length}] {url} | {data} | {title}".format(status=str(self.resp.status), length=str(len(self.respdata.decode())), url=self.url, data=data, title=title) )
         elif args.output == "csv":
-            print( "{status}, {length}, {url}, {data}, {title}".format(status=str(self.resp.status), length=str(len(self.respdata)), url=self.url, data=data, title=title) )
+            print( "{status}, {length}, {url}, {data}, {title}".format(status=str(self.resp.status), length=str(len(self.respdata.decode())), url=self.url, data=data, title=title) )
         elif args.output == "xml":
             print("<item><url>" + url + "</url><data>" + data + "</data></item>")
         sys.stdout.flush()
 
     def inBody(self, test):
-        return True if self.respdata.find(test)>-1 else False
+        return True if self.respdata.decode().find(test)>-1 else False
 
     def inUrl(self, test):
         return True if self.resp.get('content-location','').find(test)>-1 else False
@@ -211,6 +212,9 @@ class Probe (threading.Thread):
         s.found("Adobe Enterprise Manager") if s.inBody("AEM") else 0
         s.found("Weblogic Application Server") if s.inBody("Welcome to Weblogic Application Server") or s.inBody("WebLogic Server") else 0 
         s.found("Spring Eureka") if s.inBody("<title>Eureka") else 0
+        s.found("Zeppelin Notebook") if s.inBody("<title ng-bind=\"$root.pageTitle\">Zeppelin") else 0
+        s.found("Jupyter Notebook") if s.inBody("Jupyter Notebook") else 0
+        s.found("Jupyter Hub") if s.inBody("JupyterHub") else 0
         
         
         # always print server header. TODO make this cleaner
@@ -258,16 +262,16 @@ class Probe (threading.Thread):
                 self.resp, self.respdata = h.request(self.url, headers={'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36'})
             if args.debug:
                 print(self.resp)
-                print(self.respdata)
+                print(self.respdata.decode())
             self.evalRules()
             if self.didFind == False:
                 self.out("No Signature Match")
             else:
                 self.didFind = False
-        except httplib2.SSLHandshakeError as e:
-            error("Could create SSL connection to " + self.url)
-            if args.debug:
-                traceback.print_exc()
+        #except httplib2.SSLHandshakeError as e:
+        #    error("Could create SSL connection to " + self.url)
+        #    if args.debug:
+        #        traceback.print_exc()
         except socket.error as e:
             error("Could not open socket to " + self.url)
             if args.debug:
@@ -285,6 +289,7 @@ class Probe (threading.Thread):
             error(str(e) + " (" + self.url + ")")
             if args.debug:
                 traceback.print_tb(sys.exc_info()[2])
+        
 
 def parse():
     if args.fqdn:
@@ -424,6 +429,8 @@ def parseNmap():
                             hosts.append({'method':'https', 'host':addr, 'port':portid})
                         if port.find('service').get('name') == 'tungsten-https':
                             hosts.append({'method':'https', 'host':addr, 'port':portid})
+                        if port.find('service').get('name') == 'ssl':
+                            hosts.append({'method':'https', 'host':addr, 'port':portid})
     return hosts
         
 # TODO --better parsing?
@@ -474,9 +481,9 @@ def parseList():
 def main(argv):
     filename = ""
     parser = argparse.ArgumentParser(description='Shakedown webservices for known CMS and technology stacks - @DanAmodio')
-    parser.add_argument('--nmap', type=file, help='nmap xml file.')
-    parser.add_argument('--nessus', type=file, help='.nessus xml file.')
-    parser.add_argument('--listfile', type=file, help='straight file list containing fully qualified urls.')
+    parser.add_argument('--nmap', type=str, help='nmap xml file.')
+    parser.add_argument('--nessus', type=str, help='.nessus xml file.')
+    parser.add_argument('--listfile', type=str, help='straight file list containing fully qualified urls.')
     parser.add_argument('--url', type=str, required=False, help='profile a url.')
     parser.add_argument('--output', default="default", type=str, required=False, help='output type: csv, xml')
     #parser.add_argument('--subnet', type=str, required=False, help='subnet to scan.')
@@ -484,7 +491,7 @@ def main(argv):
     parser.add_argument('--fqdn', default=False, action="store_true", help='Use the fully qualified domain name from scanner output (DNS). Pretty important if doing this over the internet due to how some shared hosting services route.')
     parser.add_argument('--debug', default=False, action="store_true", help="Print the response data.")
     parser.add_argument('--threads', default=1, type=int, help='Number of concurrent request threads.')
-    #parser.add_argument('--rules',default='rules',type=file,required=False,help='the rules file')
+    #parser.add_argument('--rules',default='rules',type=str,required=False,help='the rules file')
     #parser.add_argument('--nofollowup', default=False, action="store_true", help='disable sending followup requests to a host, like /wp-login.php.') # I want to avoid doing this at all with this script.
     # --fingerprint (default)
     parser.add_argument('--uri', type=str, required=False, help='get status code for a URI across all inputs. e.g. /Trace.axd')
