@@ -6,7 +6,7 @@ You can also supply a single URL or file with a list of URLs.
 
 For example:
 
-    $ python webintel.py --url http://en.wikipedia.org
+    $ python3 webintel.py --url http://en.wikipedia.org
     [*] Starting Web Intel scanner -- by Dan Amodio
     [*] This script attempts to identify common CMS and web applications with a single request.
     [*]
@@ -18,6 +18,13 @@ I'm using httplib2, so you'll need that:
     $ pip install httplib2
 
 Then it should be good to go!
+
+With virtual enviornment 
+
+    python3 -m venv webintel-python-env
+    source webintel-python-env/bin/activate
+    pip3 install httplib2
+    pip3 install pyopenssl
 
 ## Usage
 
