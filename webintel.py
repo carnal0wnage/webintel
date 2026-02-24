@@ -227,7 +227,7 @@ class Probe (threading.Thread):
         s.found("Oracle HTTP Server") if s.inHeader("server", "Oracle-HTTP-Server") else 0
         s.found("Oracle Forms and Reports") if s.inBody("Oracle Application Server Forms and Reports Services") else 0
         s.found("DD-WRT") if s.inBody("DD-WRT") else 0
-         s.found("Sun GlassFish Enterprise Server") if s.inHeader("server", "Sun GlassFish Enterprise Server") else 0
+        s.found("Sun GlassFish Enterprise Server") if s.inHeader("server", "Sun GlassFish Enterprise Server") else 0
         s.found("Sun GlassFish Open Source Edition") if s.inHeader("server", "GlassFish Server Open Source Edition") else 0
         s.found("Default Glassfish Homepage") if s.inBody("GlassFish Server") and s.inBody("Your server is now running") else 0
         s.found("GoAhead Web Server") if s.inHeader("server", "GoAhead-Webs") else 0
