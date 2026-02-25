@@ -358,7 +358,6 @@ class Probe (threading.Thread):
         s.found("Sharepoint") if s.inHeader("MicrosoftSharePointTeamServices", ".") or s.inHeader("microsoftsharepointteamservices", ".") else 0
         s.found("Sharepoint") if s.inHeader("X-SharePointHealthScore", ".") or s.inHeader("x-sharepointhealthscore", ".") else 0   
         s.found("Default JMX-Console") if s.inBody("/jmx-console") and s.inBody("Welcome to JBoss") else 0
-        s.found("Jenkins") if s.inBody("Dashboard [Jenkins]") else 0
         s.found("Axis2") if s.inBody("Login to Axis2 :: Administration page") or s.inBody("Welcome to the Axis2 administration console") else 0
         s.found("Ektron CMS400") if s.inBody("EktronClientManager") or  s.inBody("/WorkArea/FrameworkUI/js/ektron.javascript.ashx") or s.inBody("/WorkArea/FrameworkUI/js/Ektron/Ektron.Class.js") else 0
         s.found("Ektron CMS400 Login") if s.inBody("CMS400 Login") else 0
@@ -391,6 +390,8 @@ class Probe (threading.Thread):
         s.found("Python or Django Debug Pages") if s.inBody("Traceback") and s.inBody("OperationalError at /") else 0
         s.found("Xdebug") if s.inBody("xdebuginfo") or s.inBody("Xdebug") and s.inHeader("X-Xdebug-Profile-Filename", ".") else 0
         s.found("WampServer ") if s.inBody("<title>WAMPSERVER") or s.inBody("Wampserver") else 0
+        s.found("Jenkins") if s.inBody("Dashboard [Jenkins]") else 0
+
 
 
         # DevOps / CI / artifact
