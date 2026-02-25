@@ -20,7 +20,7 @@ import threading
 import queue
 import time
 import ssl, OpenSSL
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import json
 
 #reload(sys)  
@@ -37,6 +37,124 @@ exitFlag = False
 qlock = threading.Lock()
 qhosts = queue.Queue()
 
+# --- Signature -> operator hints (single-GET followups) ---
+HINTS = {
+    "GitLab": [
+        "Try: /users/sign_in, /explore, /help, /-/health, /-/metrics (if exposed)",
+        "Enumerate: public projects, groups, exposed runners; look for CI/CD variables/secrets in logs/artifacts",
+        "Check: instance version banner in HTML, and any open registration settings"
+    ],
+    "GitHub Enterprise": [
+        "Try: /login, /session, /setup, /site/terms, /stafftools (auth-gated but good to know)",
+        "Enumerate: public repos/orgs; look for exposed actions runners / packages endpoints"
+    ],
+    "Bitbucket": [
+        "Try: /login, /j_atl_security_check, /rest/api/ (auth-gated but reveals stack sometimes)",
+        "Enumerate: project keys, repo listing if anonymous access is enabled"
+    ],
+    "Azure DevOps Server": [
+        "Try: /_signin, /_sso, /_apis/ (may reveal org/project surface)",
+        "Look for: build artifacts exposure, feed endpoints, test result endpoints"
+    ],
+    "JFrog Artifactory": [
+        "Try: /artifactory/, /ui/, /api/system/ping, /api/system/version (often auth-gated but quick indicators)",
+        "Enumerate: anonymous repositories, misconfigured virtual repos, exposed build info"
+    ],
+    "Nexus Repository Manager": [
+        "Try: /#welcome, /service/rest/v1/status, /service/rest/swagger.json (if exposed)",
+        "Enumerate: anonymous browse/download, blob store leaks via misconfig"
+    ],
+    "Harbor Registry": [
+        "Try: /api/v2.0/, /c/login, /api/v2.0/systeminfo (sometimes partially exposed)",
+        "Enumerate: public projects/repos, robot accounts, weak auth settings"
+    ],
+    "SonarQube": [
+        "Try: /api/server/version, /api/system/status, /api/users/search (auth varies)",
+        "Enumerate: public projects, issues, SCM leak paths; look for tokens in settings/config"
+    ],
+    "Rundeck": [
+        "Try: /user/login, /api/ (auth varies), check if project listings leak",
+        "High-value: job definitions often contain creds, scripts, or node inventory"
+    ],
+    "Apache Airflow": [
+        "Try: /airflow/login, /api/v1/ (newer), /admin/ (older)",
+        "High-value: connections/variables, DAG code, log endpoints, misconfigured auth"
+    ],
+    "Grafana": [
+        "Try: /login, /api/health, /api/search (auth varies)",
+        "High-value: data sources, dashboards with secrets/URLs, anonymous access"
+    ],
+    "Kibana": [
+        "Try: /app/kibana, /api/status",
+        "High-value: saved objects, index patterns; check if Elasticsearch is reachable too"
+    ],
+    "Splunk": [
+        "Try: /en-US/account/login, /services/server/info (auth varies)",
+        "High-value: deployment server, HEC endpoints, exposed apps/configs"
+    ],
+    "Prometheus": [
+        "Try: /graph, /targets, /api/v1/status/buildinfo",
+        "High-value: scrape targets reveal internal hosts; config may leak via misconfig"
+    ],
+    "Alertmanager": [
+        "Try: /#/alerts, /api/v2/status",
+        "High-value: receivers/webhooks reveal internal endpoints/tokens"
+    ],
+    "pgAdmin": [
+        "Try: /login, check for default pgAdmin landing",
+        "High-value: stored DB connections if compromised; check weak auth / exposed instance"
+    ],
+    "phpPgAdmin": [
+        "Try: /, look for server listing / DB browser",
+        "High-value: direct DB access surface; check default creds (where appropriate) and misconfig"
+    ],
+    "Cockpit": [
+        "Try: /cockpit/, /cockpit/login",
+        "High-value: host admin surface; check exposure + auth method"
+    ],
+    "Webmin": [
+        "Try: /session_login.cgi",
+        "High-value: historical vulns; confirm version and exposure scope"
+    ],
+    "Portainer": [
+        "Try: /, /api/status, /api/endpoints (auth varies)",
+        "High-value: Docker/K8s control plane; check unauth or weak auth"
+    ],
+    "Rancher": [
+        "Try: /v3-public/, /dashboard/",
+        "High-value: cluster creds, downstream kubeconfigs, API tokens"
+    ],
+    "Argo CD": [
+        "Try: /api/v1/session, /api/version",
+        "High-value: repo creds, cluster creds, app manifests; check SSO config"
+    ],
+    "Keycloak": [
+        "Try: /realms/<realm>/.well-known/openid-configuration",
+        "High-value: realm discovery, clients, misconfigured redirect URIs, admin console exposure"
+    ],
+    "Azure App Service": [
+        "ARRAffinity cookie suggests App Service; consider: app service SCM/Kudu if discoverable",
+        "Look for: *.scm.<host> patterns (don’t request here, just hint operators)"
+    ],
+    "AWS (Elastic Beanstalk / ALB hint)": [
+        "x-amzn-trace-id suggests AWS; consider CloudFront/ALB in front; origin discovery may be needed",
+        "Look for: default EB markers, and check if app leaks instance metadata links in HTML"
+    ],
+    "GCP (App Engine / trace hint)": [
+        "x-cloud-trace-context suggests GCP; consider IAP/proxy layers and service-to-service endpoints",
+        "Look for: default app engine markers or backend service names in HTML/JS"
+    ],
+    "Python or Django Debug Pages": [
+        "Review pages for info leak or credentials in settings"
+    ],
+    "phpinfo() Page": [
+    "High-value info disclosure: reveals PHP version, modules, paths, env vars",
+    "Look for: document root paths, temp dirs, upload dirs, loaded extensions",
+    "Check: disable_functions, open_basedir, session.save_path",
+    "Pivot: use module list to identify exploit paths (imagick, gd, ldap, etc)"
+    ],
+}
+
 def warn(*objs):
     print("[*][WARNING]: ", *objs, file=sys.stderr)
 
@@ -49,7 +167,13 @@ def debug(*objs):
         print("[*][DEBUG]: ", *objs)
 
 def getHttpLib():
-    return httplib2.Http(".cache", disable_ssl_certificate_validation=True, timeout=5)
+    h = httplib2.Http(".cache", disable_ssl_certificate_validation=True, timeout=5)
+    # We handle redirects manually so we can print 30x Location hops.
+    try:
+        h.follow_redirects = False
+    except Exception:
+        pass
+    return h
     
 # HTML parser to read title tag
 class TitleParser(HTMLParser):
@@ -89,6 +213,7 @@ class Probe (threading.Thread):
         self.resp = None
         self.respdata = None
         self.didFind = False
+        self._hints_printed = set()
         
     def out(self, data):
         if args.output == "default":
@@ -130,6 +255,28 @@ class Probe (threading.Thread):
     def found(self, signature):
         self.didFind = True
         self.out(signature)
+
+        # Print operator hints (once per signature per host)
+        hints = HINTS.get(signature)
+        if not hints:
+            return
+        if signature in self._hints_printed:
+            return
+        self._hints_printed.add(signature)
+        for h in hints:
+            self.out("  HINT: " + h)
+        
+        # Print hints (once per signature per host)
+        hints = HINTS.get(signature)
+        if not hints:
+            return
+
+        if signature in self._hints_printed:
+            return
+        self._hints_printed.add(signature)
+
+        for h in hints:
+            self.out("  HINT: " + h)
 
     # https://en.wikipedia.org/wiki/%3F:#Python
     def evalRules(s):
@@ -225,6 +372,7 @@ class Probe (threading.Thread):
         s.found("Oracle Integrated Lights Out Manager") if s.inHeader("server", "Oracle-ILOM-Web-Server") else 0
         s.found("Oracle iPlanet Web Server") if s.inHeader("server", "Oracle-iPlanet-Web-Server") else 0
         s.found("Oracle HTTP Server") if s.inHeader("server", "Oracle-HTTP-Server") else 0
+        s.found("Oracle Apex") if s.inBody("Oracle APEX - Sign In") or s.inBody("Oracle APEX") or s.inBody("APEX_SUCCESS_MESSAGE") else 0
         s.found("Oracle Forms and Reports") if s.inBody("Oracle Application Server Forms and Reports Services") else 0
         s.found("DD-WRT") if s.inBody("DD-WRT") else 0
         s.found("Sun GlassFish Enterprise Server") if s.inHeader("server", "Sun GlassFish Enterprise Server") else 0
@@ -237,14 +385,60 @@ class Probe (threading.Thread):
         s.found("Apache Spark Worker") if s.inBody("Spark Worker") else 0
         s.found("Werkzeug Debugger") if s.inBody("Werkzeug Debugger") else 0
         s.found("phpPgAdmin") if s.inBody("phpPgAdmin") else 0
-        s.found("GitLab") if s.inBody("GitLab Community Edition") else 0
         s.found("Adobe Enterprise Manager") if s.inBody("AEM") else 0
         s.found("Weblogic Application Server") if s.inBody("Welcome to Weblogic Application Server") or s.inBody("WebLogic Server") else 0 
         s.found("Spring Eureka") if s.inBody("<title>Eureka") else 0
+        s.found("Python or Django Debug Pages") if s.inBody("Traceback") and s.inBody("OperationalError at /") else 0
+        s.found("Xdebug") if s.inBody("xdebuginfo") or s.inBody("Xdebug") and s.inHeader("X-Xdebug-Profile-Filename", ".") else 0
+        s.found("WampServer ") if s.inBody("<title>WAMPSERVER") or s.inBody("Wampserver") else 0
+
+
+        # DevOps / CI / artifact
+        s.found("GitLab") if s.inBody("assets/gitlab") or s.inBody("GitLab") and s.inBody("users/sign_in") else 0
+        s.found("GitLab") if s.inBody("GitLab Community Edition") else 0
+        s.found("GitHub Enterprise") if s.inBody("GitHub Enterprise") or s.inBody("github-enterprise") or (s.inBody("Sign in to GitHub") and s.inBody("/session")) else 0
+        s.found("Bitbucket") if s.inBody("Atlassian Bitbucket") or s.inBody("atlassian-bitbucket") or (s.inBody("Bitbucket") and s.inBody("/j_atl_security_check")) else 0
+        s.found("Azure DevOps Server") if s.inBody("Azure DevOps") or s.inBody("Visual Studio Team Services") or s.inBody("/_signin") or s.inBody("/_sso") else 0
+
+        s.found("JFrog Artifactory") if s.inBody("JFrog") and s.inBody("Artifactory") or s.inBody("/artifactory/") else 0
+        s.found("Nexus Repository Manager") if s.inBody("Nexus Repository Manager") or s.inBody("Sonatype Nexus Repository") or s.inBody("nexus-repository-manager") else 0
+        s.found("Harbor Registry") if s.inBody("VMware Harbor") or (s.inBody("Harbor") and s.inBody("/api/v2.0/")) else 0
+
+        s.found("SonarQube") if s.inBody("SonarQube") or s.inBody("sonarqube") or s.inBody("/api/server/version") else 0
+        s.found("Rundeck") if s.inBody("Rundeck") or s.inBody("/user/login") or s.inBody("rundeck") else 0
+        s.found("Apache Airflow") if s.inBody("Apache Airflow") or s.inBody("/airflow/login") or (s.inBody("Airflow") and s.inBody("DAGs")) else 0
+
+        # Observability / admin
+        s.found("Grafana") if s.inBody("Grafana") or s.inBody("window.grafanaBootData") or s.inBody("public/build/") else 0
+        s.found("Kibana") if s.inBody("Kibana") or s.inBody("/app/kibana") or s.inBody("elastic kibana") else 0
+        s.found("Splunk") if s.inBody("Splunk") and (s.inBody("/en-US/account/login") or s.inBody("Splunk Inc.")) else 0
+        s.found("Prometheus") if s.inBody("Prometheus Time Series Collection") or (s.inBody("Prometheus") and (s.inBody("/graph") or s.inBody("/targets"))) else 0
+        s.found("Alertmanager") if s.inBody("Alertmanager") or s.inBody("/#/alerts") else 0
+
+        s.found("pgAdmin") if s.inBody("pgAdmin") or s.inBody("pgAdmin 4") else 0
+        s.found("phpPgAdmin") if s.inBody("phpPgAdmin") else 0
+
+        s.found("phpinfo() Page") if (s.inBody("phpinfo()") or  s.inBody("<title>phpinfo()") or (s.inBody("PHP Version") and s.inBody("System")) or (s.inBody("Configuration File (php.ini) Path") and s.inBody("Loaded Configuration File")) or s.inBody("PHP Credits") or s.inBody("Zend Engine") and s.inBody("PHP License")) else 0
+
+        s.found("Cockpit") if s.inBody("/cockpit/") or s.inBody("Cockpit Web Service") or s.inBody("cockpit") else 0
+        s.found("Webmin") if s.inBody("Webmin") or s.inBody("/session_login.cgi") else 0
+
+        s.found("Portainer") if s.inBody("Portainer") or s.inBody("/api/auth") or s.inBody("portainer") else 0
+        s.found("Rancher") if s.inBody("Rancher") or s.inBody("/v3-public/") or s.inBody("rancher") else 0
+        s.found("Argo CD") if s.inBody("Argo CD") or s.inBody("/api/v1/session") else 0
+        s.found("Keycloak") if s.inBody("Keycloak") or s.inBody("/realms/") else 0
+
+        # Cloud app platforms (single-GET friendly markers)
+        s.found("Azure App Service") if s.inHeader("set-cookie", "ARRAffinity") or s.inHeader("set-cookie", "ARRAffinitySameSite") or s.inBody("Azure App Service") else 0
+        s.found("AWS (Elastic Beanstalk / ALB hint)") if s.inHeader("x-amzn-trace-id", "Root=") or s.inBody("AWS Elastic Beanstalk") else 0
+        s.found("GCP (App Engine / trace hint)") if s.inHeader("x-cloud-trace-context", "/") or s.inBody("Google App Engine") else 0
+
 
         s.found("Content-Security-Policy") if s.resp.get('content-security-policy') else 0
         s.found("Sentry.io CSP") if s.inHeader("content-security-policy", "sentry_key") or s.inHeader("content-security-policy", "sentry.io") else 0 # https://hackerone.com/reports/374737
         s.found("CVS directory") if s.inBody("$RCSfile:") or s.inBody("$Revision:") else 0
+        
+
         
 
         # always print server header. TODO make this cleaner
@@ -303,7 +497,40 @@ class Probe (threading.Thread):
                     self.out("Not HTTPS")
                     return
             else:
-                self.resp, self.respdata = h.request(self.url)
+                # Single-request profiling by default, but we can optionally follow redirects
+                # while printing each 30x hop for fingerprinting.
+                redirects_followed = 0
+                current_url = self.url
+
+                while True:
+                    self.url = current_url
+                    self.resp, self.respdata = h.request(current_url)
+
+                    # Always print final status/URL and any 30x hops (if enabled)
+                    status = int(getattr(self.resp, 'status', 0))
+                    location = self.resp.get('location', '')
+
+                    if status in (301, 302, 303, 307, 308) and location:
+                        # Resolve relative redirects
+                        next_url = urljoin(current_url, location)
+                        self.out(f"Redirect {status} -> {next_url}")
+
+                        if redirects_followed >= int(args.max_redirects):
+                            # Stop here; keep this 30x response as the final response
+                            break
+
+                        redirects_followed += 1
+                        current_url = next_url
+                        continue
+
+                    # Not a redirect (or no location), this is the final response
+                    break
+
+                # Keep the original URL label, but also surface the effective URL when redirects were followed
+                if redirects_followed > 0:
+                    self.url = current_url
+                    self.out(f"Final URL: {current_url}")
+                self.url = current_url
             if args.debug:
                 #print(self.resp)
                 #print(self.respdata)
@@ -559,6 +786,8 @@ def main(argv):
     parser.add_argument('--dav', default=False, action="store_true", help="finger WebDav with a PROPFIND request.")
     parser.add_argument('--cert', default=False, action="store_true", help="Retrieve information from server certificate.")
     parser.add_argument('--links', default=False, action="store_true", help="Extract links from HTTP response")
+
+    parser.add_argument('--max-redirects', default=5, type=int, help='Maximum redirects to follow (prints each 30x hop). Set 0 to never follow.')
     # TODO - http://stackoverflow.com/questions/7689941/how-can-i-retrieve-the-tls-ssl-peer-certificate-of-a-remote-host-using-python
     # http://stackoverflow.com/questions/30862099/how-can-i-get-certificate-issuer-information-in-python
 
