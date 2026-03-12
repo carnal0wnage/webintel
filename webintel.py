@@ -22,6 +22,7 @@ import time
 import ssl, OpenSSL
 from urllib.parse import urlparse, urljoin
 import json
+import re
 
 #reload(sys)  
 #sys.setdefaultencoding('utf8')
@@ -61,7 +62,7 @@ HINTS = {
         "Enumerate: anonymous repositories, misconfigured virtual repos, exposed build info"
     ],
     "Nexus Repository Manager": [
-        "Try: /#welcome, /service/rest/v1/status, /service/rest/swagger.json (if exposed)",
+        "Try: /#welcome, #browse/browse, /service/rest/v1/status, /service/rest/swagger.json (if exposed)",
         "Enumerate: anonymous browse/download, blob store leaks via misconfig"
     ],
     "Harbor Registry": [
@@ -147,12 +148,198 @@ HINTS = {
     "Python or Django Debug Pages": [
         "Review pages for info leak or credentials in settings"
     ],
-    "phpinfo() Page": [
-    "High-value info disclosure: reveals PHP version, modules, paths, env vars",
-    "Look for: document root paths, temp dirs, upload dirs, loaded extensions",
-    "Check: disable_functions, open_basedir, session.save_path",
-    "Pivot: use module list to identify exploit paths (imagick, gd, ldap, etc)"
+    "Gitea": [
+        "Try: /users/sign_in, /explore, /explore/repos",
+        "Enumerate: public projects, groups, exposed runners; look for CI/CD variables/secrets in logs/artifacts",
+        "Check /-/admin/actions/runners, <your_gitea.com>/<org>/settings/actions/runners, <your_gitea.com>/<owner>/<repo>/settings/actions/runners"
     ],
+    "phpinfo() Page": [
+        "High-value info disclosure: reveals PHP version, modules, paths, env vars",
+        "Look for: document root paths, temp dirs, upload dirs, loaded extensions",
+        "Check: disable_functions, open_basedir, session.save_path",
+        "Pivot: use module list to identify exploit paths (imagick, gd, ldap, etc)"
+    ],
+    "MCP Redirect": [
+        "Redirect Location contains /mcp, /sse, or /messages (possible MCP server exposure)",
+        "Followups: request the redirected endpoint directly and look for JSON-RPC (\"jsonrpc\":\"2.0\") or SSE (text/event-stream)",
+        "Assess auth: if the MCP endpoint is open, inventory exposed tools/resources and any internal network reach"
+    ],
+    "MCP Server (Model Context Protocol)": [
+        "Likely Model Context Protocol server exposed (tool-bridge for LLM clients)",
+        "Followups: check for a dedicated MCP endpoint path (commonly /mcp) and whether auth is required",
+        "Look for references to inspector tokens (e.g., MCP_PROXY_AUTH_TOKEN) or public docs that reveal endpoint paths"
+    ],
+    "MCP JSON-RPC Surface": [
+        "JSON-RPC markers suggest an MCP-style API surface (often returns JSON-RPC error on wrong method/route)",
+        "Followups: confirm the MCP endpoint path (often /mcp) and use a proper MCP client/inspector to list tools/resources",
+        "Assess auth: bearer tokens, reverse proxy auth, or no auth (high risk if tools expose internal systems)"
+    ],
+    "MCP Endpoint Mentioned": [
+        "Page references an MCP endpoint path (commonly /mcp per spec)",
+        "Followups: try the referenced path directly and observe status codes, content-type, and redirects",
+        "If present, validate whether it’s restricted to internal networks or protected by auth"
+    ],
+    "MCP SSE Surface": [
+        "SSE markers suggest MCP-over-SSE style transport (often /sse + /messages pattern)",
+        "Followups: identify the SSE endpoint and the paired POST messages endpoint; check for auth requirements",
+        "If SSE is open, confirm whether it leaks endpoint/session info in events"
+    ],
+    "MCP Common Paths Referenced": [
+        "Common MCP paths referenced in page content (/mcp, /sse, /messages)",
+        "Followups: probe those paths (operator-driven) for JSON-RPC or SSE responses and auth challenges",
+        "If exposed, inventory which backends/tools it can reach (highest-risk part of MCP exposure)"
+    ],
+    "SSO Redirect (Okta)": [
+        "Redirect to Okta detected (.okta.com or /oauth2/default)",
+        "Followups: identify auth server, check OIDC discovery endpoint, inspect client_id in redirect",
+        "Look for redirect_uri validation weaknesses and exposed app IDs"
+    ],
+    "SSO Redirect (Entra ID)": [
+        "Redirect to Microsoft login.microsoftonline.com detected",
+        "Followups: extract tenant ID from redirect URL",
+        "Check for legacy auth endpoints and user enumeration behavior"
+    ],
+    "SSO Redirect (Auth0)": [
+        "Redirect to Auth0 tenant detected (*.auth0.com)",
+        "Followups: identify tenant name, check /.well-known/openid-configuration",
+        "Inspect redirect_uri and client_id parameters"
+    ],
+    "SSO Redirect (Ping)": [
+        "Redirect to Ping Identity endpoint detected (/as/authorization.oauth2)",
+        "Followups: inspect federation metadata endpoints and relay state handling",
+        "Assess redirect URI validation"
+    ],
+    "SSO Redirect (Keycloak)": [
+        "Redirect to Keycloak realm detected (/realms/)",
+        "Followups: identify realm name and check /.well-known/openid-configuration",
+        "Look for exposed admin console or misconfigured clients"
+    ],
+    "Jupyter Notebook": [
+        "Try: /tree, /lab, /api/sessions, /api/kernels, /terminals",
+        "Check: if token auth is enabled or the notebook loads directly",
+        "Look for: credentials in notebook cells, mounted datasets, cloud keys in environment variables"
+    ],
+
+    "JupyterLab": [
+        "Try: /lab, /lab/workspaces, /api/kernels, /api/sessions",
+        "Check: if terminal access is enabled via /terminals",
+        "Enumerate: running notebooks and inspect Python cells for secrets or dataset paths"
+    ],
+
+    "MLflow": [
+        "Try: /mlflow, /api/2.0/mlflow/experiments/list, /api/2.0/mlflow/runs/search",
+        "Enumerate: experiments, runs, model artifacts, and storage locations",
+        "Look for: S3/GCS paths, training parameters, embedded secrets in experiment metadata"
+    ],
+
+    "Kubeflow": [
+        "Try: _/pipeline, /pipeline, /pipeline/apis, _/jupyter, /notebook, /katib, _/tensorboards",
+        "Enumerate: pipelines, runs, and notebooks accessible in the dashboard",
+        "Look for: container images, service accounts, and pipeline parameters"
+    ],
+
+    "Kubeflow Pipelines": [
+        "Try: /pipeline/apis/v1beta1/pipelines, /pipeline/apis/v1beta1/runs",
+        "Enumerate: pipeline definitions and container execution steps",
+        "Check: if pipelines can be triggered without authentication"
+    ],
+
+    "Prefect": [
+        "Try: /flows, /flow_runs, /api/graphql",
+        "Enumerate: workflow definitions and execution logs",
+        "Look for: secrets used in ML training pipelines"
+    ],
+
+    "Dagster": [
+        "Try: /graphql, /runs, /assets",
+        "Enumerate: pipeline definitions and job runs",
+        "Look for: container images or scripts executed by workflows"
+    ],
+
+    "TensorFlow Serving": [
+        "Try: /v1/models, /v1/models/<model>",
+        "Enumerate: available models and version status",
+        "Check: if inference endpoints are accessible without authentication"
+    ],
+
+    "TorchServe": [
+        "Try: /models, /predictions/<model>, /metrics",
+        "Enumerate: registered models and inference endpoints",
+        "Check: if model management APIs allow uploads or modifications"
+    ],
+
+    "Ray Dashboard": [
+        "Try: /dashboard, /api/jobs, /api/actors",
+        "Enumerate: running jobs, cluster nodes, and task history",
+        "Check: if job submission APIs allow remote execution"
+    ],
+
+    "Weaviate": [
+        "Try: /v1/schema, /v1/objects, /v1/graphql",
+        "Enumerate: collections and stored vector objects",
+        "Look for: embedded documents or knowledge base content"
+    ],
+
+    "Qdrant": [
+        "Try: /collections, /collections/<name>, /points",
+        "Enumerate: stored embedding collections",
+        "Look for: documents used for RAG systems"
+    ],
+
+    "Milvus": [
+        "Try: /collections, /entities, /metrics",
+        "Enumerate: vector collections and stored embeddings",
+        "Look for: indexed internal knowledge bases"
+    ],
+
+    "LangChain": [
+        "Try: /chat, /api/chat, /api/agent, /docs",
+        "Enumerate: LLM endpoints and tool integrations",
+        "Look for: retrieval pipelines, API keys, or internal connectors"
+    ],
+
+    "LlamaIndex": [
+        "Try: /query, /chat, /api/query",
+        "Enumerate: document retrieval endpoints",
+        "Look for: indexed documents used in RAG pipelines"
+    ],
+
+    "Label Studio": [
+        "Try: /projects, /tasks, /data",
+        "Enumerate: labeled datasets and annotation tasks",
+        "Look for: training data or sensitive documents"
+    ],
+
+    "CVAT": [
+        "Try: /tasks, /projects, /api",
+        "Enumerate: labeling tasks and dataset images",
+        "Look for: proprietary image datasets"
+    ],
+
+    "Superset": [
+        "Try: /superset/welcome, /dashboard, /explore",
+        "Enumerate: dashboards and data sources",
+        "Look for: SQL queries revealing database structures"
+    ],
+
+    "Metabase": [
+        "Try: /api/session/properties, /dashboard, /question",
+        "Enumerate: dashboards and connected databases",
+        "Look for: exposed queries and warehouse connections"
+    ],
+
+    "Redash": [
+        "Try: /queries, /api/queries, /data_sources",
+        "Enumerate: saved SQL queries and dashboards",
+        "Look for: credentials or database schema details"
+    ],
+
+    "Roboflow Inference Server": [
+        "Try: /docs, /openapi.json, /build, /notebook/start",
+        "Enumerate: inference routes (/infer, /predict) and any model listing endpoints; verify if auth is required",
+        "Check: if the bundled notebook environment is reachable; notebook access can lead to code execution and credential discovery"
+    ],
+
 }
 
 def warn(*objs):
@@ -214,6 +401,8 @@ class Probe (threading.Thread):
         self.respdata = None
         self.didFind = False
         self._hints_printed = set()
+        self._mcp_redirect_tagged = False
+        self._sso_redirect_tagged = set()
         
     def out(self, data):
         if args.output == "default":
@@ -252,6 +441,35 @@ class Probe (threading.Thread):
             return True
         return False
 
+    def inMeta(self, test):
+        try:
+            if not self.respdata:
+                return False
+
+            html = self.respdata.decode(errors="ignore").lower()
+
+            return True if test.lower() in html and "<meta" in html else False
+
+        except:
+            return False
+
+    def inTitle(self, test):
+        try:
+            if not self.respdata:
+                return False
+
+            html = self.respdata.decode(errors="ignore")
+            p = TitleParser()
+            p.feed(html)
+
+            if not p.title:
+                return False
+
+            return True if p.title.lower().find(test.lower()) > -1 else False
+        except Exception:
+            return False
+
+
     def found(self, signature):
         self.didFind = True
         self.out(signature)
@@ -280,15 +498,16 @@ class Probe (threading.Thread):
 
     # https://en.wikipedia.org/wiki/%3F:#Python
     def evalRules(s):
-        s.found("Wordpress") if s.inBody("wp-content/") or s.inBody("wp-includes") else 0 
-        s.found("Drupal") if s.inBody("drupal.min.js") or s.inBody("Drupal.settings") or s.inBody("http://drupal.org") or s.inBody("/node") else 0 
+        s.found("Wordpress") if s.inBody("wp-content/") or s.inBody("wp-includes") else 0
+        s.found("WordPress") if s.inMeta("wordpress") else 0
+        s.found("Drupal") if s.inBody("drupal.min.js") or s.inBody("Drupal.settings") or s.inBody("http://drupal.org") else 0 
         s.found("Coldfusion") if s.inBody(".cfm") or s.inBody(".cfc") else 0
         s.found("Coldfusion 11") if s.inBody("1997 - 2014 Adobe Systems Incorporated and its licensors") else 0
         s.found("Coldfusion Cookie") if s.inHeader("set-cookie", "CFTOKEN=") or s.inHeader("set-cookie", "CFAUTHORIZATION") else 0
         s.found("Accellion SFT") if s.inBody("Secured by Accellion") else 0
         s.found("F5 BIG-IP") if (s.inBody("licensed from F5 Networks") and s.inUrl("my.policy")) or (s.inBody("BIG-IP logout page") and s.inUrl("my.logout.php")) else 0
         s.found("Confluence") if s.inBody("login to Confluence") or s.inBody("Log in to Confluence") or s.inBody("com-atlassian-confluence") else 0
-        s.found("JIRA") if s.inBody("JIRA administrators") or s.inBody("jira.webresources") else 0
+        s.found("JIRA") if s.inBody("JIRA administrators") or s.inBody("Jira Service Management") or s.inBody("jira.webresources") else 0
         s.found("Lotus Domino") if s.inBody("homepage.nsf/homePage.gif?OpenImageResource") or (s.inBody("Notes Client") and s.inBody("Lotus")) else 0
         s.found("Citrix ShareFile Storage Server") if s.inBody("ShareFile Storage Server") else 0
         s.found("IIS7 Welcome Page") if s.inBody("welcome.png") and s.inBody("IIS7") else 0
@@ -383,7 +602,6 @@ class Probe (threading.Thread):
         s.found("Apache Spark Master") if s.inBody("Spark Master") else 0
         s.found("Apache Spark Worker") if s.inBody("Spark Worker") else 0
         s.found("Werkzeug Debugger") if s.inBody("Werkzeug Debugger") else 0
-        s.found("phpPgAdmin") if s.inBody("phpPgAdmin") else 0
         s.found("Adobe Enterprise Manager") if s.inBody("AEM") else 0
         s.found("Weblogic Application Server") if s.inBody("Welcome to Weblogic Application Server") or s.inBody("WebLogic Server") else 0 
         s.found("Spring Eureka") if s.inBody("<title>Eureka") else 0
@@ -391,6 +609,7 @@ class Probe (threading.Thread):
         s.found("Xdebug") if s.inBody("xdebuginfo") or s.inBody("Xdebug") and s.inHeader("X-Xdebug-Profile-Filename", ".") else 0
         s.found("WampServer ") if s.inBody("<title>WAMPSERVER") or s.inBody("Wampserver") else 0
         s.found("Jenkins") if s.inBody("Dashboard [Jenkins]") else 0
+        s.found("Swagger UI") if s.inBody("Swagger UI") else 0
 
 
 
@@ -406,8 +625,113 @@ class Probe (threading.Thread):
         s.found("Harbor Registry") if s.inBody("VMware Harbor") or (s.inBody("Harbor") and s.inBody("/api/v2.0/")) else 0
 
         s.found("SonarQube") if s.inBody("SonarQube") or s.inBody("sonarqube") or s.inBody("/api/server/version") else 0
-        s.found("Rundeck") if s.inBody("Rundeck") or s.inBody("/user/login") or s.inBody("rundeck") else 0
+        s.found("Rundeck") if s.inBody("Rundeck") or s.inBody("rundeck") else 0
+        s.found("Gitea") if s.inBody("Gitea: Git with a cup of tea") else 0
+        s.found("RabbitMQ") if s.inBody("RabbitMQ Management") else 0
+        s.found("Jupyter Notebook") if s.inBody("Jupyter Notebook") or s.inBody("JupyterLab") or s.inBody("The Jupyter Notebook") or s.inBody("data-jupyter-api-token") else 0
+        s.found("Jupyter Notebook") if s.inBody("Jupyter Notebook") else 0
+        s.found("Jupyter API Token") if s.inBody("data-jupyter-api-token") else 0
+
+        s.found("Apache Zeppelin") if s.inBody("Apache Zeppelin") else 0
+
         s.found("Apache Airflow") if s.inBody("Apache Airflow") or s.inBody("/airflow/login") or (s.inBody("Airflow") and s.inBody("DAGs")) else 0
+
+
+        s.found("MLflow") if s.inBody("mlflow-ui") else 0
+        s.found("MLflow") if s.inBody("MLflow Tracking") else 0
+        s.found("MLflow API") if s.inUrl("/api/2.0/mlflow") else 0
+
+        s.found("Weights & Biases") if s.inBody("wandb") else 0
+        s.found("Neptune ML") if s.inBody("neptune.ai") else 0
+        s.found("Comet ML") if s.inBody("comet.ml") else 0
+
+        s.found("Kubeflow") if s.inBody("Kubeflow") else 0
+        s.found("Kubeflow Pipelines") if s.inUrl("/pipeline/apis") else 0
+        s.found("Kubeflow Central Dashboard") if s.inBody("Kubeflow Central Dashboard") else 0
+
+        s.found("Apache Airflow") if s.inBody("Apache Airflow") else 0
+        s.found("Airflow DAG Graph") if s.inUrl("/graph") else 0
+        s.found("Airflow DAG List") if s.inUrl("/dags") else 0
+
+        s.found("Prefect") if s.inBody("Prefect") else 0
+        s.found("Dagster") if s.inBody("Dagster") else 0
+        s.found("Metaflow") if s.inBody("Metaflow") else 0
+
+        s.found("TensorFlow Serving") if s.inUrl("/v1/models") else 0
+        s.found("TensorFlow Serving") if s.inBody("model_version_status") else 0
+
+        s.found("TorchServe") if s.inBody("TorchServe") else 0
+        s.found("TorchServe Models API") if s.inUrl("/models") else 0
+
+        s.found("Seldon Core") if s.inBody("Seldon") else 0
+        s.found("KServe") if s.inBody("kserve") else 0
+
+        s.found("BentoML") if s.inBody("BentoML") else 0
+        s.found("NVIDIA Triton") if s.inBody("Triton Inference Server") else 0
+
+        s.found("Ray Dashboard") if s.inBody("Ray Dashboard") else 0
+        s.found("Ray Jobs API") if s.inUrl("/api/jobs") else 0
+
+        s.found("NVIDIA GPU Dashboard") if s.inBody("NVIDIA GPU") else 0
+        s.found("CUDA Metrics") if s.inBody("CUDA") else 0
+
+        s.found("Prometheus GPU Metrics") if s.inBody("DCGM_FI_DEV_GPU") else 0
+
+        s.found("Weaviate") if s.inBody("weaviate") else 0
+        s.found("Weaviate Schema API") if s.inUrl("/v1/schema") else 0
+
+        s.found("Qdrant") if s.inBody("qdrant") else 0
+        s.found("Qdrant Collections API") if s.inUrl("/collections") else 0
+
+        s.found("Milvus") if s.inBody("milvus") else 0
+        s.found("ChromaDB") if s.inBody("chroma") else 0
+
+        s.found("LangChain") if s.inBody("LangChain") else 0
+        s.found("LangChain Retriever") if s.inBody("retriever") else 0
+        s.found("LangChain Vectorstore") if s.inBody("vectorstore") else 0
+
+        s.found("LlamaIndex") if s.inBody("llama_index") else 0
+        s.found("Semantic Kernel") if s.inBody("semantic-kernel") else 0
+
+        s.found("AutoGPT") if s.inBody("AutoGPT") else 0
+
+        s.found("Apache Superset") if s.inBody("Superset") else 0
+        s.found("Metabase") if s.inBody("Metabase") else 0
+        s.found("Redash") if s.inBody("Redash") else 0
+
+        s.found("Label Studio") if s.inBody("Label Studio") else 0
+        s.found("CVAT") if s.inBody("CVAT") else 0
+        s.found("Doccano") if s.inBody("doccano") else 0
+
+        s.found("HuggingFace") if s.inBody("huggingface") else 0
+        s.found("HuggingFace API") if s.inUrl("/api/models") else 0
+
+        s.found("Open WebUI") if s.inBody("Open WebUI") else 0
+        s.found("LibreChat") if s.inBody("LibreChat") else 0
+        s.found("AnythingLLM") if s.inBody("AnythingLLM") else 0
+        s.found("Dify AI") if s.inBody("Dify") else 0
+
+        s.found("Flowise") if s.inBody("Flowise") else 0
+        s.found("Langflow") if s.inBody("Langflow") else 0
+
+        s.found("Gradio App") if s.inBody("gradio") else 0
+        s.found("Streamlit App") if s.inBody("streamlit") else 0
+
+        s.found("LiteLLM Gateway") if s.inBody("litellm") else 0
+        s.found("vLLM Server") if s.inBody("vllm") else 0
+        s.found("Text Generation Inference") if s.inBody("text-generation-inference") else 0
+
+        s.found("Ollama Server") if s.inBody("Ollama") else 0
+
+        s.found("Langfuse") if s.inBody("langfuse") else 0
+        s.found("Helicone") if s.inBody("helicone") else 0
+        s.found("PromptLayer") if s.inBody("promptlayer") else 0
+
+        s.found("Phoenix AI Observability") if s.inBody("phoenix") else 0
+
+        s.found("OpenAI-Compatible API") if s.inUrl("/v1/chat/completions") else 0
+        s.found("OpenAI-Compatible API") if s.inUrl("/v1/models") else 0
+
 
         # Observability / admin
         s.found("Grafana") if s.inBody("Grafana") or s.inBody("window.grafanaBootData") or s.inBody("public/build/") else 0
@@ -433,6 +757,94 @@ class Probe (threading.Thread):
         s.found("Azure App Service") if s.inHeader("set-cookie", "ARRAffinity") or s.inHeader("set-cookie", "ARRAffinitySameSite") or s.inBody("Azure App Service") else 0
         s.found("AWS (Elastic Beanstalk / ALB hint)") if s.inHeader("x-amzn-trace-id", "Root=") or s.inBody("AWS Elastic Beanstalk") else 0
         s.found("GCP (App Engine / trace hint)") if s.inHeader("x-cloud-trace-context", "/") or s.inBody("Google App Engine") else 0
+        
+        # --- Model Context Protocol (MCP) server exposure checks ---
+        # MCP / Model Context Protocol obvious content
+        s.found("MCP Server (Model Context Protocol)") if (
+            s.inBody("Model Context Protocol") or
+            s.inBody("modelcontextprotocol") or
+            s.inBody("mcp server") or
+            s.inBody("MCP Inspector") or
+            s.inBody("MCP_PROXY_AUTH_TOKEN=")
+        ) else 0
+
+        # JSON-RPC signature (common on MCP endpoints when you hit them with GET)
+        s.found("MCP JSON-RPC Surface") if (
+            s.inHeader("content-type", "application/json") and
+            (s.inBody("\"jsonrpc\"") and s.inBody("\"2.0\"")) and
+            (s.inBody("\"error\"") or s.inBody("\"method\"") or s.inBody("\"result\""))
+        ) else 0
+
+        # Streamable HTTP MCP endpoint is commonly /mcp (or similar); many servers mention it in docs/HTML
+        s.found("MCP Endpoint Mentioned") if (
+            s.inBody("/mcp") and (s.inBody("json-rpc") or s.inBody("jsonrpc") or s.inBody("streamable") or s.inBody("sse"))
+        ) else 0
+
+        # SSE transport markers (older MCP HTTP+SSE setups often use /sse and /messages)
+        s.found("MCP SSE Surface") if (
+            s.inHeader("content-type", "text/event-stream") or
+            (s.inBody("event:") and (s.inBody("data:") or s.inBody("event: endpoint") or s.inBody("event: message"))) or
+            (s.inBody("/sse") and s.inBody("/messages"))
+        ) else 0
+
+        # Redirect-chain fingerprints (your redirect printing now exposes Location)
+        # If the landing page redirects to an MCP-ish path, you'll see it in output,
+        # but this body check catches apps that render links to common MCP endpoints.
+        s.found("MCP Common Paths Referenced") if (
+            s.inBody("/mcp") or
+            s.inBody("/mcp/sse") or
+            s.inBody("/sse") or
+            s.inBody("/messages")
+        ) else 0
+
+
+         # --- AI / ML / LLM infrastructure (high signal, single-GET) ---
+        s.found("MLflow") if (s.inBody("MLflow") and (s.inBody("mlflow-ui") or s.inBody("MLflow Tracking"))) or s.inBody("/api/2.0/mlflow") else 0
+
+        s.found("Kubeflow") if s.inBody("Kubeflow") or s.inBody("Kubeflow Central Dashboard") else 0
+        s.found("Kubeflow Pipelines") if s.inBody("/pipeline/apis") or s.inBody("Kubeflow Pipelines") else 0
+
+        s.found("Prefect") if s.inBody("Prefect") or s.inBody("prefect-ui") else 0
+        s.found("Dagster") if s.inBody("Dagster") or (s.inBody("dagster") and s.inBody("graphql")) else 0
+
+        s.found("TensorFlow Serving") if s.inBody("model_version_status") and s.inBody("/v1/models") else 0
+        s.found("TorchServe") if s.inBody("TorchServe") or (s.inBody("/models") and s.inBody("modelName")) else 0
+
+        s.found("Ray Dashboard") if s.inBody("Ray Dashboard") or s.inBody("ray dashboard") else 0
+
+        s.found("Weaviate") if s.inBody("weaviate") or s.inBody("/v1/graphql") else 0
+        s.found("Qdrant") if s.inBody("qdrant") or (s.inBody("/collections") and s.inBody("result")) else 0
+        s.found("Milvus") if s.inBody("milvus") else 0
+        s.found("Chroma") if (s.inBody("chromadb") or s.inBody("Chroma")) and s.inBody("collections") else 0
+
+        s.found("Roboflow Inference Server") if s.inTitle("Roboflow Inference Server") else 0
+        s.found("Roboflow Inference Server") if s.inBody("Roboflow Inference is") else 0
+        s.found("Roboflow Inference Server") if s.inBody("/notebook/start") else 0
+
+
+        # --- Stealthy / modern enterprise AI surfaces ---
+        s.found("Open WebUI") if s.inBody("Open WebUI") or s.inBody("open-webui") else 0
+        s.found("LibreChat") if s.inBody("LibreChat") or s.inBody("librechat") else 0
+        s.found("AnythingLLM") if s.inBody("AnythingLLM") or s.inBody("anything-llm") else 0
+        s.found("Dify") if s.inBody("Dify") or s.inBody("dify.ai") else 0
+        s.found("Flowise") if s.inBody("Flowise") or s.inBody("flowise") else 0
+        s.found("Langflow") if s.inBody("Langflow") or s.inBody("langflow") else 0
+
+        s.found("Gradio") if s.inBody("gradio") and (s.inBody("api/predict") or s.inBody("gradio-app")) else 0
+        s.found("Streamlit") if s.inBody("streamlit") or s.inBody("_stcore") else 0
+
+        # OpenAI-compatible inference / gateways (common internal copilots)
+        s.found("OpenAI-Compatible API") if s.inBody("/v1/chat/completions") or s.inBody("/v1/embeddings") or (s.inBody('"object":"model"') and s.inBody('"data"')) else 0
+        s.found("LiteLLM Proxy") if s.inBody("LiteLLM") or s.inBody("litellm") else 0
+        s.found("vLLM OpenAI Server") if s.inBody("vLLM") or s.inBody("vllm") else 0
+        s.found("TGI (text-generation-inference)") if s.inBody("text-generation-inference") or s.inBody("text_generation_inference") else 0
+        s.found("Ollama") if s.inBody("ollama") or s.inBody("/api/generate") or s.inBody("/api/tags") else 0
+
+        # LLM observability (often stores prompts/responses)
+        s.found("Langfuse") if s.inBody("Langfuse") or s.inBody("langfuse") else 0
+        s.found("Helicone") if s.inBody("Helicone") or s.inBody("helicone") else 0
+        s.found("Phoenix (Arize)") if (s.inBody("Arize") and s.inBody("Phoenix")) or (s.inBody("phoenix") and s.inBody("llm")) else 0
+        s.found("PromptLayer") if s.inBody("PromptLayer") or s.inBody("promptlayer") else 0
 
 
         s.found("Content-Security-Policy") if s.resp.get('content-security-policy') else 0
@@ -515,6 +927,48 @@ class Probe (threading.Thread):
                         # Resolve relative redirects
                         next_url = urljoin(current_url, location)
                         self.out(f"Redirect {status} -> {next_url}")
+                        
+                        # Auto-tag MCP-style redirects (fingerprinting opportunity)
+                        try:
+                            nl = next_url.lower()
+                            if (not self._mcp_redirect_tagged) and ("/mcp" in nl or "/sse" in nl or "/messages" in nl):
+                                self._mcp_redirect_tagged = True
+                                _prev_url = self.url
+                                self.url = next_url
+                                self.found("MCP Redirect")
+                                self.url = _prev_url
+                        except Exception:
+                            pass
+
+                        # --- Auto-tag SSO redirects ---
+                        try:
+                            nl = next_url.lower()
+
+                            def tag_sso(name):
+                                if name not in self._sso_redirect_tagged:
+                                    self._sso_redirect_tagged.add(name)
+                                    _prev_url = self.url
+                                    self.url = next_url
+                                    self.found(name)
+                                    self.url = _prev_url
+
+                            if ".okta.com" in nl or "/oauth2/default" in nl:
+                                tag_sso("SSO Redirect (Okta)")
+
+                            if "login.microsoftonline.com" in nl:
+                                tag_sso("SSO Redirect (Entra ID)")
+
+                            if ".auth0.com" in nl:
+                                tag_sso("SSO Redirect (Auth0)")
+
+                            if "/as/authorization.oauth2" in nl or "pingidentity" in nl:
+                                tag_sso("SSO Redirect (Ping)")
+
+                            if "/realms/" in nl:
+                                tag_sso("SSO Redirect (Keycloak)")
+
+                        except Exception:
+                            pass
 
                         if redirects_followed >= int(args.max_redirects):
                             # Stop here; keep this 30x response as the final response
